@@ -13,6 +13,7 @@
   .bar.top { border-bottom:1px solid var(--line); }
   .bar.bottom { border-top:1px solid var(--line); padding-bottom:calc(6px + env(safe-area-inset-bottom)); }
   button, select { background:#fff; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; min-height:34px; }
+  input[type=date] { background:#fff; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 6px; font:inherit; min-height:34px; }
   button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
   button:active { opacity:.8; }
   .grow { flex:1; }
@@ -28,7 +29,7 @@
 <body>
 <div id="app">
   <div class="bar top">
-    <select id="daySel" aria-label="Replay day"></select>
+    <button id="dayPrev" aria-label="Previous day">◀</button><input type="date" id="dayIn" aria-label="Replay day"><button id="dayNext" aria-label="Next day">▶</button><button id="dayRnd" title="Random day">🎲</button>
     <div id="tfs"></div>
     <div class="grow"></div>
     <button id="zoomOut" aria-label="Zoom out">−</button>
@@ -53,7 +54,7 @@
 // Where the data lives. "data/" = next to this page (GitHub Pages).
 // For Supabase Storage use the public bucket URL, for example:
 // "https://YOUR-PROJECT.supabase.co/storage/v1/object/public/ticks/"
-const DATA_BASE = "data/";
+const DATA_BASE = "https://drknygdsfirqaypagosr.supabase.co/storage/v1/object/public/ticks/";
 
 // ---------- constants ----------
 const TFS = [5, 15, 45, 60, 1440];
@@ -64,7 +65,11 @@ const PAD = 5;                               // empty slots right of the live ba
 const K = 2 / 21;                            // 20-period EMA
 
 // ---------- state ----------
-let days = [];            // [{date, file, bars5, ms, bid, ask}]
+let days = [];            // [{date, file, ms, bid, ask}]
+let daily = {};           // date -> [o,h,l,c] (x1000)
+const months = {};        // 'YYYY-MM' -> {date: [[bar,o,h,l,c],...]}
+const HIST = 40;          // trading days of 5m/15m/45m/1h history shown before the replay day
+const DAILY_MAX = 300;    // daily bars shown before the replay day
 let dayIdx = 0;           // replay day
 let clock = 0;            // ms since 09:30 ET on the replay day
 let ptr = 0;              // next tick to process in the replay day
@@ -94,29 +99,69 @@ function mergeBar(t, d, b, o, h, l, c) {
 function bucketOf(t, ms) { return t === 1440 ? 0 : Math.floor(ms / (t * 60000)); }
 function addTick(d, ms, p) { for (const t of TFS) mergeBar(t, d, bucketOf(t, ms), p, p, p, p); }
 
+async function fetchBytes(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> HTTP " + r.status);
+  let u8 = new Uint8Array(await r.arrayBuffer());
+  if (u8[0] === 0x1f && u8[1] === 0x8b) {          // gzip: unpack in the browser
+    const ds = new DecompressionStream("gzip");
+    u8 = new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(ds)).arrayBuffer());
+  }
+  return u8;
+}
+function readVarints(u8, pos, end, out) {
+  let n = 0;
+  while (pos < end) {
+    let v = 0, sh = 1, byte;
+    do { byte = u8[pos++]; v += (byte & 0x7f) * sh; sh *= 128; } while (byte & 0x80);
+    out[n++] = v;
+  }
+  return n;
+}
 async function loadTicks(i) {
   const D = days[i];
   if (D.ms) return;
-  const buf = await (await fetch(DATA_BASE + D.file)).arrayBuffer();
-  const n = new Uint32Array(buf, 0, 1)[0];
-  D.ms = new Uint32Array(buf, 4, n);
-  D.bid = new Int32Array(buf, 4 + 4 * n, n);
-  D.ask = new Int32Array(buf, 4 + 8 * n, n);
+  const u8 = await fetchBytes(DATA_BASE + D.file);
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const n = dv.getUint32(0, true), la = dv.getUint32(4, true), lb = dv.getUint32(8, true);
+  const pa = 12, pb = pa + la, pc = pb + lb;
+  const a = new Float64Array(n), b = new Float64Array(n), c = new Float64Array(n);
+  readVarints(u8, pa, pb, a); readVarints(u8, pb, pc, b); readVarints(u8, pc, u8.length, c);
+  D.ms = new Uint32Array(n); D.bid = new Int32Array(n); D.ask = new Int32Array(n);
+  let m = 0, x = 0, sp = 0;
+  const unz = v => (v % 2 === 0 ? v / 2 : -(v + 1) / 2);
+  for (let k = 0; k < n; k++) {
+    m += a[k]; x += unz(b[k]); sp += unz(c[k]);
+    D.ms[k] = m; D.bid[k] = x; D.ask[k] = x + sp;
+  }
+}
+async function loadMonth(key) {
+  if (months[key]) return;
+  const r = await fetch(DATA_BASE + "m_" + key + ".json");
+  months[key] = r.ok ? await r.json() : {};
 }
 
 async function resetDay(i) {
   busy = true; playing = false; syncUI();
   $("msg").style.display = "flex"; $("msg").textContent = "Loading " + days[i].date + "…";
   await loadTicks(i);
+  const rs = Math.max(0, i - HIST), ds = Math.max(0, i - DAILY_MAX);
+  const need = new Set(); for (let k = rs; k < i; k++) need.add(days[k].date.slice(0, 7));
+  await Promise.all([...need].map(loadMonth));
   dayIdx = i; clock = 0; ptr = 0; off = 0;
   bars = {}; for (const t of TFS) bars[t] = [];
-  for (let k = 0; k < i; k++) {                    // earlier days = completed history, built from their 5-minute bars
-    for (const [b5, o, h, l, c] of days[k].bars5) {
+  for (let k = ds; k < rs; k++) {                 // old days: daily bar only
+    const d = daily[days[k].date];
+    if (d) mergeBar(1440, k, 0, d[0] / 1000, d[1] / 1000, d[2] / 1000, d[3] / 1000);
+  }
+  for (let k = rs; k < i; k++) {                  // recent days: built from their 5-minute bars
+    for (const [b5, o, h, l, c] of (months[days[k].date.slice(0, 7)][days[k].date] || [])) {
       for (const t of TFS) mergeBar(t, k, t === 1440 ? 0 : Math.floor(b5 * 5 / t), o / 1000, h / 1000, l / 1000, c / 1000);
     }
   }
-  const prev = i > 0 ? days[i - 1].bars5 : null;
-  lastPrice = prev && prev.length ? prev[prev.length - 1][4] / 1000 : null;
+  let lp = null;
+  for (let k = i - 1; k >= 0 && lp == null; k--) { const d = daily[days[k].date]; if (d) lp = d[3] / 1000; }
+  lastPrice = lp;
   $("msg").style.display = "none"; busy = false; syncUI();
 }
 
@@ -145,12 +190,15 @@ function nextBar() {
 // ---------- loading ----------
 async function load() {
   const idx = await (await fetch(DATA_BASE + "index.json")).json();
-  const b5 = await (await fetch(DATA_BASE + "bars5.json")).json();
-  days = idx.days.map(d => ({ date: d.date, file: d.file, bars5: b5[d.date] || [] }));
-  const sel = $("daySel");
-  sel.innerHTML = days.map((d, i) => `<option value="${i}">${fmtDate(d.date)}</option>`).join("");
-  sel.value = String(days.length - 1);
-  await resetDay(days.length - 1);
+  daily = await (await fetch(DATA_BASE + "daily.json")).json();
+  days = idx.days.map(date => ({ date, file: date + ".tk.gz" }));
+  const inp = $("dayIn"); inp.min = days[0].date; inp.max = days[days.length - 1].date;
+  await goDay(days.length - 1);
+}
+async function goDay(i) {
+  i = Math.max(0, Math.min(days.length - 1, i));
+  $("dayIn").value = days[i].date;
+  try { await resetDay(i); } catch (err) { busy = false; $("msg").style.display = "flex"; $("msg").textContent = "Could not load " + days[i].date + ": " + err.message; }
 }
 
 // ---------- formatting ----------
@@ -280,10 +328,17 @@ function updateText() {
 }
 $("tfs").innerHTML = TFS.map(t => `<button data-tf="${t}">${TF_LABEL[t]}</button>`).join(" ");
 $("tfs").addEventListener("click", e => { const t = e.target.dataset && e.target.dataset.tf; if (t) { tf = Number(t); off = 0; syncUI(); } });
-$("daySel").addEventListener("change", e => resetDay(Number(e.target.value)));
-$("play").addEventListener("click", async () => { if (busy) return; if (clock >= SESSION_MS) await resetDay(dayIdx); playing = !playing; off = 0; syncUI(); });
+$("dayIn").addEventListener("change", e => {
+  const v = e.target.value; if (!v || !days.length) return;
+  let i = days.findIndex(d => d.date >= v); if (i < 0) i = days.length - 1;   // no data that day: next trading day
+  goDay(i);
+});
+$("dayPrev").addEventListener("click", () => goDay(dayIdx - 1));
+$("dayNext").addEventListener("click", () => goDay(dayIdx + 1));
+$("dayRnd").addEventListener("click", () => goDay(1 + Math.floor(Math.random() * Math.max(1, days.length - 1))));
+$("play").addEventListener("click", async () => { if (busy) return; if (clock >= SESSION_MS) await goDay(dayIdx); playing = !playing; off = 0; syncUI(); });
 $("next").addEventListener("click", nextBar);
-$("restart").addEventListener("click", () => resetDay(dayIdx));
+$("restart").addEventListener("click", () => goDay(dayIdx));
 $("speed").addEventListener("change", e => speed = Number(e.target.value));
 $("zoomIn").addEventListener("click", () => vis[tf] = Math.max(8, Math.round(vis[tf] * 0.8)));
 $("zoomOut").addEventListener("click", () => vis[tf] = Math.min(300, Math.round(vis[tf] * 1.25)));
