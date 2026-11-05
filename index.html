@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Brooks Tick Replay</title>
 <style>
-  :root { --bg:#0f1216; --panel:#171b21; --line:#262c35; --fg:#e6e9ee; --muted:#8a93a0; --up:#26a69a; --dn:#ef5350; --acc:#4c9aff; }
+  :root { --bg:#ffffff; --panel:#eef0f3; --line:#c9ced6; --fg:#15181d; --muted:#5d6670; --acc:#1f6feb; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.3 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
   #app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
   .bar { display:flex; align-items:center; gap:6px; padding:6px 8px; background:var(--panel); flex-wrap:wrap; }
   .bar.top { border-bottom:1px solid var(--line); }
   .bar.bottom { border-top:1px solid var(--line); padding-bottom:calc(6px + env(safe-area-inset-bottom)); }
-  button, select { background:#222831; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; min-height:34px; }
+  button, select { background:#fff; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; min-height:34px; }
   button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
   button:active { opacity:.8; }
   .grow { flex:1; }
@@ -23,7 +23,6 @@
   #clock { font-variant-numeric:tabular-nums; font-weight:600; min-width:92px; text-align:right; }
   #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; text-align:center; padding:20px; }
   @media (max-width:520px) { button, select { padding:6px 7px; } .bar { gap:4px; } #clock { min-width:0; font-size:13px; } #zoomIn,#zoomOut { padding:6px 10px; } }
-  .sep { width:1px; height:22px; background:var(--line); }
 </style>
 </head>
 <body>
@@ -39,7 +38,7 @@
   <div id="wrap"><canvas id="cv"></canvas><div id="msg">Loading data…</div></div>
   <div class="bar bottom">
     <button id="play">▶ Play</button>
-    <button id="step" title="Jump to the next 5-minute mark">⏭ 5m</button>
+    <button id="next" title="Run to the close of the current bar, press again for the next bar">Next bar ⏭</button>
     <button id="restart" title="Back to 09:30">⟲</button>
     <select id="speed" aria-label="Speed">
       <option value="1">1x</option><option value="2">2x</option><option value="5">5x</option>
@@ -51,88 +50,113 @@
 </div>
 <script>
 "use strict";
+// Where the data lives. "data/" = next to this page (GitHub Pages).
+// For Supabase Storage use the public bucket URL, for example:
+// "https://YOUR-PROJECT.supabase.co/storage/v1/object/public/ticks/"
+const DATA_BASE = "data/";
+
 // ---------- constants ----------
 const TFS = [5, 15, 45, 60, 1440];
 const TF_LABEL = { 5: "5m", 15: "15m", 45: "45m", 60: "1h", 1440: "1D" };
-const SESSION_MS = 6.5 * 3600 * 1000;      // 09:30 -> 16:00
+const SESSION_MS = 405 * 60000;              // 09:30 -> 16:15 New York = 81 five-minute bars
 const OPEN_MIN = 9 * 60 + 30;
 const PAD = 5;                               // empty slots right of the live bar
+const K = 2 / 21;                            // 20-period EMA
 
 // ---------- state ----------
-let days = [];            // [{date, ms, bid, ask}]
+let days = [];            // [{date, file, bars5, ms, bid, ask}]
 let dayIdx = 0;           // replay day
 let clock = 0;            // ms since 09:30 ET on the replay day
 let ptr = 0;              // next tick to process in the replay day
 let playing = false;
 let speed = 10;
 let tf = 5;
-let bars = {};            // tf -> [{d,b,o,h,l,c}]
-const vis = { 5: 78, 15: 60, 45: 40, 60: 36, 1440: 20 };
+let bars = {};            // tf -> [{d,b,o,h,l,c,e}]
+const vis = { 5: 81, 15: 54, 45: 27, 60: 27, 1440: 20 };
 let off = 0;              // panned back by this many bars (0 = live)
-let lastPrice = null, lastAsk = null;
+let lastPrice = null;
+let busy = false;
 
-// ---------- bar building (this is the heart: only ticks up to `clock` are ever added) ----------
-function addTick(d, ms, p) {
-  for (const t of TFS) {
-    const b = t === 1440 ? 0 : Math.floor(ms / (t * 60000));
-    const arr = bars[t];
-    const last = arr[arr.length - 1];
-    if (last && last.d === d && last.b === b) {
-      if (p > last.h) last.h = p;
-      if (p < last.l) last.l = p;
-      last.c = p;
-    } else {
-      arr.push({ d, b, o: p, h: p, l: p, c: p });
-    }
+// ---------- bar building: only ticks up to `clock` are ever added ----------
+function mergeBar(t, d, b, o, h, l, c) {
+  const arr = bars[t], last = arr[arr.length - 1];
+  if (last && last.d === d && last.b === b) {
+    if (h > last.h) last.h = h;
+    if (l < last.l) last.l = l;
+    last.c = c;
+    const pe = arr.length > 1 ? arr[arr.length - 2].e : c;
+    last.e = pe + (c - pe) * K;
+  } else {
+    const pe = last ? last.e : c;
+    arr.push({ d, b, o, h, l, c, e: pe + (c - pe) * K });
   }
 }
+function bucketOf(t, ms) { return t === 1440 ? 0 : Math.floor(ms / (t * 60000)); }
+function addTick(d, ms, p) { for (const t of TFS) mergeBar(t, d, bucketOf(t, ms), p, p, p, p); }
 
-function resetDay(i) {
-  dayIdx = i; clock = 0; ptr = 0; off = 0; playing = false;
+async function loadTicks(i) {
+  const D = days[i];
+  if (D.ms) return;
+  const buf = await (await fetch(DATA_BASE + D.file)).arrayBuffer();
+  const n = new Uint32Array(buf, 0, 1)[0];
+  D.ms = new Uint32Array(buf, 4, n);
+  D.bid = new Int32Array(buf, 4 + 4 * n, n);
+  D.ask = new Int32Array(buf, 4 + 8 * n, n);
+}
+
+async function resetDay(i) {
+  busy = true; playing = false; syncUI();
+  $("msg").style.display = "flex"; $("msg").textContent = "Loading " + days[i].date + "…";
+  await loadTicks(i);
+  dayIdx = i; clock = 0; ptr = 0; off = 0;
   bars = {}; for (const t of TFS) bars[t] = [];
-  for (let k = 0; k < i; k++) {                    // earlier days = completed history
-    const D = days[k];
-    for (let j = 0; j < D.ms.length; j++) addTick(k, D.ms[j], D.bid[j] / 1000);
+  for (let k = 0; k < i; k++) {                    // earlier days = completed history, built from their 5-minute bars
+    for (const [b5, o, h, l, c] of days[k].bars5) {
+      for (const t of TFS) mergeBar(t, k, t === 1440 ? 0 : Math.floor(b5 * 5 / t), o / 1000, h / 1000, l / 1000, c / 1000);
+    }
   }
-  const prev = i > 0 ? days[i - 1] : null;
-  lastPrice = prev ? prev.bid[prev.bid.length - 1] / 1000 : null;
-  lastAsk = null;
-  syncUI();
+  const prev = i > 0 ? days[i - 1].bars5 : null;
+  lastPrice = prev && prev.length ? prev[prev.length - 1][4] / 1000 : null;
+  $("msg").style.display = "none"; busy = false; syncUI();
 }
 
 function advanceTo(c) {
   const D = days[dayIdx];
   while (ptr < D.ms.length && D.ms[ptr] <= c) {
-    lastPrice = D.bid[ptr] / 1000; lastAsk = D.ask[ptr] / 1000;
+    lastPrice = D.bid[ptr] / 1000;
     addTick(dayIdx, D.ms[ptr], lastPrice);
     ptr++;
   }
   clock = c;
 }
 
+// close the bar of the chart's current timeframe; pressed again, close the next one
+function nextBar() {
+  if (busy || clock >= SESSION_MS) return;
+  const T = tf === 1440 ? SESSION_MS : tf * 60000;
+  const b = Math.floor(clock / T);
+  let end = (b + 1) * T - 1;
+  if (clock >= end) end = (b + 2) * T - 1;
+  if (end >= SESSION_MS - 1) end = SESSION_MS;
+  playing = false; off = 0;
+  advanceTo(end); syncUI();
+}
+
 // ---------- loading ----------
 async function load() {
-  const idx = await (await fetch("data/index.json")).json();
-  for (const d of idx.days) {
-    const buf = await (await fetch("data/" + d.file)).arrayBuffer();
-    const n = new Uint32Array(buf, 0, 1)[0];
-    days.push({
-      date: d.date,
-      ms: new Uint32Array(buf, 4, n),
-      bid: new Int32Array(buf, 4 + 4 * n, n),
-      ask: new Int32Array(buf, 4 + 8 * n, n),
-    });
-  }
-  const sel = document.getElementById("daySel");
+  const idx = await (await fetch(DATA_BASE + "index.json")).json();
+  const b5 = await (await fetch(DATA_BASE + "bars5.json")).json();
+  days = idx.days.map(d => ({ date: d.date, file: d.file, bars5: b5[d.date] || [] }));
+  const sel = $("daySel");
   sel.innerHTML = days.map((d, i) => `<option value="${i}">${fmtDate(d.date)}</option>`).join("");
-  document.getElementById("msg").style.display = "none";
   sel.value = String(days.length - 1);
-  resetDay(days.length - 1);
+  await resetDay(days.length - 1);
 }
 
 // ---------- formatting ----------
+const $ = id => document.getElementById(id);
 const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-function fmtDate(s) { const [y, m, d] = s.split("-").map(Number); return MON[m - 1] + " " + d; }
+function fmtDate(s) { const [y, m, d] = s.split("-").map(Number); return d + " " + MON[m - 1]; }
 function hhmm(min) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
 function fmtClock(ms) {
   const s = Math.floor(ms / 1000), m = OPEN_MIN * 60 + s;
@@ -140,11 +164,11 @@ function fmtClock(ms) {
 }
 function barLabel(bar) {
   if (tf === 1440) return fmtDate(days[bar.d].date);
-  return hhmm(OPEN_MIN + bar.b * tf);
+  return fmtDate(days[bar.d].date) + " " + hhmm(OPEN_MIN + bar.b * tf);
 }
 
-// ---------- drawing ----------
-const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+// ---------- drawing (MetaTrader style: white background, white/black candles, dashed day separators) ----------
+const cv = $("cv"), ctx = cv.getContext("2d");
 let W = 0, H = 0, DPR = 1;
 function resize() {
   DPR = window.devicePixelRatio || 1;
@@ -158,88 +182,107 @@ function niceStep(range, target) {
   const raw = range / target, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
   return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
 }
+const NICE_MIN = [5, 15, 30, 45, 60, 90, 135, 180, 270, 405];
 
 function draw() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = "#0f1216"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
   const arr = bars[tf]; if (!arr || !arr.length) return;
-  const axisW = 66, axisH = 22, pw = W - axisW, ph = H - axisH;
+  const axisW = 70, axisH = 22, pw = W - axisW, ph = H - axisH;
   const n = arr.length, nv = vis[tf], slot = pw / (nv + PAD);
   const xc = i => pw - (PAD + (n - 1 - i) + off + 0.5) * slot;
   let i0 = n - 1; while (i0 > 0 && xc(i0 - 1) > -slot) i0--;
   let i1 = n - 1; while (i1 > 0 && xc(i1) > pw) i1--;
-  if (xc(i1) < 0) { ctx.fillStyle = "#8a93a0"; ctx.fillText("Drag right to return to the live bar", 20, 30); }
   let hi = -Infinity, lo = Infinity;
   for (let i = i0; i <= i1; i++) { if (arr[i].h > hi) hi = arr[i].h; if (arr[i].l < lo) lo = arr[i].l; }
   if (!isFinite(hi)) return;
   const padp = Math.max((hi - lo) * 0.08, 0.5); hi += padp; lo -= padp;
   const y = p => (hi - p) / (hi - lo) * ph;
 
-  ctx.font = "11px system-ui,sans-serif"; ctx.textBaseline = "middle";
-  // price grid
-  const step = niceStep(hi - lo, Math.max(3, ph / 55));
-  ctx.strokeStyle = "#1c222a"; ctx.fillStyle = "#8a93a0"; ctx.lineWidth = 1; ctx.textAlign = "left";
-  for (let p = Math.ceil(lo / step) * step; p < hi; p += step) {
-    const yy = Math.round(y(p)) + 0.5;
-    ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(pw, yy); ctx.stroke();
-    ctx.fillText(p.toFixed(step < 1 ? 1 : 0), pw + 6, yy);
-  }
-  // time grid + day separators
-  const k = Math.max(1, Math.ceil(80 / slot));
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  for (let i = i0; i <= i1; i++) {
-    const x = xc(i), newDay = i === 0 || arr[i].d !== arr[i - 1].d;
-    if (newDay && tf !== 1440) {
-      ctx.strokeStyle = "#2f3744"; ctx.setLineDash([3, 4]);
-      ctx.beginPath(); ctx.moveTo(Math.round(x - slot / 2) + 0.5, 0); ctx.lineTo(Math.round(x - slot / 2) + 0.5, ph); ctx.stroke(); ctx.setLineDash([]);
-    }
-    const nearDay = !(newDay && tf !== 1440) && tf !== 1440 && ((i > 0 && arr[i].d !== arr[i - 1].d) || (i < n - 1 && false) || (() => { for (let j = Math.max(0, i - Math.ceil(50 / slot)); j <= i; j++) if (j === 0 || arr[j].d !== arr[j - 1].d) return true; return false; })());
-    if ((i % k === 0 && !nearDay) || (newDay && tf !== 1440)) {
-      ctx.strokeStyle = "#1c222a"; ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, ph); ctx.stroke();
-      ctx.fillStyle = newDay && tf !== 1440 ? "#cfd6df" : "#8a93a0";
-      ctx.fillText(newDay && tf !== 1440 ? fmtDate(days[arr[i].d].date) : barLabel(arr[i]), x, ph + axisH / 2 + 1);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
+  // day separators (dashed)
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  if (tf !== 1440) for (let i = i0; i <= i1; i++) {
+    if (i > 0 && arr[i].d !== arr[i - 1].d) {
+      const x = Math.round(xc(i) - slot / 2) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke();
     }
   }
+  ctx.setLineDash([]);
   // candles
-  const bw = Math.max(1, Math.min(slot * 0.7, 24));
+  const bw = Math.max(1, Math.min(slot * 0.7, 22));
   for (let i = i0; i <= i1; i++) {
     const b = arr[i], x = Math.round(xc(i)), up = b.c >= b.o;
-    ctx.strokeStyle = ctx.fillStyle = up ? "#26a69a" : "#ef5350";
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x + 0.5, y(b.h)); ctx.lineTo(x + 0.5, y(b.l)); ctx.stroke();
-    const yo = y(b.o), yc = y(b.c), top = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yo - yc));
-    ctx.fillRect(Math.round(x - bw / 2), Math.round(top), Math.max(1, Math.round(bw)), Math.round(hgt));
+    const yo = y(b.o), yc = y(b.c), top = Math.round(Math.min(yo, yc)), hgt = Math.max(1, Math.round(Math.abs(yo - yc)));
+    const w = Math.max(1, Math.round(bw)), lx = Math.round(x + 0.5 - w / 2);
+    ctx.fillStyle = up ? "#fff" : "#000";
+    ctx.fillRect(lx, top, w, hgt);
+    ctx.strokeRect(lx + 0.5, top + 0.5, Math.max(0, w - 1), Math.max(0, hgt - 1));
   }
-  // live price line + tag
-  const lb = arr[n - 1];
+  // 20 EMA
+  ctx.strokeStyle = "#00a0a8"; ctx.lineWidth = 1.3; ctx.beginPath();
+  for (let i = i0; i <= i1; i++) { const x = xc(i) + 0.5, yy = y(arr[i].e); if (i === i0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy); }
+  ctx.stroke();
+  // live price line
   if (lastPrice != null) {
-    const yy = Math.round(y(lastPrice)) + 0.5, col = lb.c >= lb.o ? "#26a69a" : "#ef5350";
-    ctx.strokeStyle = col; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(pw, yy); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = col; ctx.fillRect(pw, yy - 9, axisW, 18);
-    ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.fillText(lastPrice.toFixed(2), pw + 5, yy);
+    const yy = Math.round(y(lastPrice)) + 0.5;
+    ctx.strokeStyle = "#7a828c"; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(pw, yy); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.restore();
+
+  // price axis
+  ctx.font = "11px system-ui,sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  const step = niceStep(hi - lo, Math.max(3, ph / 48));
+  ctx.fillStyle = "#000"; ctx.strokeStyle = "#000";
+  for (let p = Math.ceil(lo / step) * step; p < hi; p += step) {
+    const yy = Math.round(y(p)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(pw, yy); ctx.lineTo(pw + 4, yy); ctx.stroke();
+    ctx.fillText(p.toFixed(step < 1 ? 2 : 1), pw + 7, yy);
+  }
+  if (lastPrice != null) {
+    const yy = Math.round(y(lastPrice)) + 0.5;
+    ctx.fillStyle = "#222"; ctx.fillRect(pw + 1, yy - 9, axisW - 1, 18);
+    ctx.fillStyle = "#fff"; ctx.fillText(lastPrice.toFixed(2), pw + 7, yy);
+  }
+  // time axis
+  ctx.fillStyle = "#000"; ctx.textAlign = "center";
+  let lastX = -1e9;
+  const labW = tf === 1440 ? 60 : 96;
+  let S = 405; for (const m of NICE_MIN) if (m % tf === 0 && (m / tf) * slot >= labW) { S = m; break; }
+  const kIdx = Math.max(1, Math.ceil(labW / slot));
+  for (let i = i0; i <= i1; i++) {
+    const a = arr[i], x = xc(i);
+    const show = tf === 1440 ? i % kIdx === 0 : (a.b * tf) % S === 0;
+    if (!show || x - lastX < labW || x < labW / 2 || x > pw - 4) continue;
+    const xx = Math.round(x) + 0.5;
+    ctx.beginPath(); ctx.moveTo(xx, ph); ctx.lineTo(xx, ph + 4); ctx.stroke();
+    ctx.fillText(barLabel(a), x, ph + axisH / 2 + 3);
+    lastX = x;
   }
   // frame
-  ctx.strokeStyle = "#262c35"; ctx.beginPath(); ctx.moveTo(pw + 0.5, 0); ctx.lineTo(pw + 0.5, ph); ctx.moveTo(0, ph + 0.5); ctx.lineTo(W, ph + 0.5); ctx.stroke();
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, pw, ph);
 }
 
 // ---------- UI ----------
-const $ = id => document.getElementById(id);
 function syncUI() {
   $("play").textContent = playing ? "⏸ Pause" : "▶ Play";
   for (const b of document.querySelectorAll("#tfs button")) b.classList.toggle("on", Number(b.dataset.tf) === tf);
 }
 function updateText() {
-  $("clock").textContent = clock >= SESSION_MS ? "16:00 closed" : fmtClock(clock);
+  $("clock").textContent = clock >= SESSION_MS ? "16:15 closed" : fmtClock(clock);
   const arr = bars[tf], lb = arr && arr[arr.length - 1];
   $("ohlc").innerHTML = lb && lb.d === dayIdx
     ? `<b>${TF_LABEL[tf]}</b> &nbsp;O <b>${lb.o.toFixed(2)}</b> H <b>${lb.h.toFixed(2)}</b> L <b>${lb.l.toFixed(2)}</b> C <b>${lb.c.toFixed(2)}</b>`
-    : `<b>${TF_LABEL[tf]}</b> &nbsp;press Play to start 09:30`;
+    : `<b>${TF_LABEL[tf]}</b> &nbsp;press Play or Next bar to start at 09:30`;
 }
 $("tfs").innerHTML = TFS.map(t => `<button data-tf="${t}">${TF_LABEL[t]}</button>`).join(" ");
 $("tfs").addEventListener("click", e => { const t = e.target.dataset && e.target.dataset.tf; if (t) { tf = Number(t); off = 0; syncUI(); } });
 $("daySel").addEventListener("change", e => resetDay(Number(e.target.value)));
-$("play").addEventListener("click", () => { if (clock >= SESSION_MS) resetDay(dayIdx); playing = !playing; off = 0; syncUI(); });
-$("step").addEventListener("click", () => { playing = false; off = 0; advanceTo(Math.min(SESSION_MS, (Math.floor(clock / 300000) + 1) * 300000 - 1)); syncUI(); });
+$("play").addEventListener("click", async () => { if (busy) return; if (clock >= SESSION_MS) await resetDay(dayIdx); playing = !playing; off = 0; syncUI(); });
+$("next").addEventListener("click", nextBar);
 $("restart").addEventListener("click", () => resetDay(dayIdx));
 $("speed").addEventListener("change", e => speed = Number(e.target.value));
 $("zoomIn").addEventListener("click", () => vis[tf] = Math.max(8, Math.round(vis[tf] * 0.8)));
@@ -250,9 +293,9 @@ const pts = new Map(); let pinch0 = 0, vis0 = 0;
 cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); vis0 = vis[tf]; } });
 cv.addEventListener("pointermove", e => {
-  const p = pts.get(e.pointerId); if (!p) return;
+  const p = pts.get(e.pointerId); if (!p || !bars[tf]) return;
   if (pts.size === 1) {
-    const slot = (W - 66) / (vis[tf] + PAD);
+    const slot = (W - 70) / (vis[tf] + PAD);
     off = Math.max(0, Math.min(bars[tf].length - 3, off + (e.clientX - p.x) / slot));
   } else if (pts.size === 2) {
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -266,13 +309,13 @@ const endPtr = e => { pts.delete(e.pointerId); pinch0 = 0; };
 cv.addEventListener("pointerup", endPtr); cv.addEventListener("pointercancel", endPtr);
 cv.addEventListener("wheel", e => { e.preventDefault(); vis[tf] = Math.max(8, Math.min(300, Math.round(vis[tf] * (e.deltaY > 0 ? 1.1 : 0.9)))); }, { passive: false });
 cv.addEventListener("dblclick", () => off = 0);
-window.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); $("play").click(); } });
+window.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); $("play").click(); } if (e.code === "ArrowRight") nextBar(); });
 
 // ---------- main loop ----------
 let tPrev = performance.now(), tText = 0;
 function frame(t) {
   const dt = Math.min(250, t - tPrev); tPrev = t;
-  if (playing && days.length) {
+  if (playing && !busy) {
     advanceTo(Math.min(SESSION_MS, clock + dt * speed));
     if (clock >= SESSION_MS) { playing = false; syncUI(); }
   }
@@ -281,8 +324,9 @@ function frame(t) {
   requestAnimationFrame(frame);
 }
 resize(); syncUI();
-load().then(() => requestAnimationFrame(frame)).catch(err => { $("msg").textContent = "Could not load data: " + err.message + " (open this page through a web server, not as a file)"; });
-window.__sim = { get bars() { return bars; }, advanceTo, resetDay, get clock() { return clock; }, setTf(t) { tf = t; }, days: () => days };
+requestAnimationFrame(frame);
+load().catch(err => { $("msg").style.display = "flex"; $("msg").textContent = "Could not load data: " + err.message + " (open this page through a web server, not as a file)"; });
+window.__sim = { get bars() { return bars; }, advanceTo, resetDay, nextBar, get clock() { return clock; }, setTf(t) { tf = t; syncUI(); }, days: () => days, get ready() { return days.length > 0 && !busy && bars[5]; } };
 </script>
 </body>
 </html>
