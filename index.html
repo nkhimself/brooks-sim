@@ -67,10 +67,13 @@
   #toast { position:fixed; z-index:80; left:50%; bottom:14px; transform:translateX(-50%); background:rgba(20,24,30,.92); color:#fff; border-radius:8px; padding:8px 14px; font-size:13px; max-width:86vw; text-align:center; pointer-events:none; }
   #tip { position:fixed; z-index:36; background:#fffbe6; border:1px solid #d4b106; border-radius:8px; padding:6px 10px; font-size:12px; max-width:260px; box-shadow:0 2px 8px rgba(0,0,0,.25); pointer-events:none; }
   [hidden] { display:none !important; }
+  @media (orientation:landscape) { body.multi #side { order:1; } body.multi #splitV { order:2; } body.multi #pbMain { order:3; } }
 
   /* ---------- trade card ---------- */
   #card { position:fixed; z-index:40; right:8px; top:8px; width:min(318px,48vw); max-height:calc(100dvh - 16px); overflow:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 3px 16px rgba(0,0,0,.35); padding:8px 9px; font-size:12px; }
-  #card .chead { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  #card .chead { display:flex; align-items:center; gap:6px; margin-bottom:4px; cursor:move; touch-action:none; }
+  #card .tags { display:flex; flex-wrap:wrap; gap:4px; max-height:92px; overflow:auto; }
+  #card .tags .chip { min-height:24px; padding:1px 8px; }
   #card .chead b { flex:1; font-size:13px; }
   #card .sec { border-top:1px solid #e4e7ec; margin-top:6px; padding-top:6px; }
   #card .row { display:flex; gap:5px; align-items:center; flex-wrap:wrap; margin:3px 0; }
@@ -102,8 +105,6 @@
   #eq { position:relative; inset:auto; width:100%; height:150px; display:block; background:#fafbfc; border:1px solid #e4e7ec; border-radius:8px; margin-bottom:10px; }
   .tr-edit td { background:#f8fafc; text-align:left !important; white-space:normal !important; }
   textarea { width:100%; min-height:90px; font:11px/1.3 ui-monospace,Menlo,Consolas,monospace; }
-  #prac { position:fixed; z-index:45; left:50%; top:50%; transform:translate(-50%,-50%); width:min(380px,92vw); max-height:92dvh; overflow:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 3px 18px rgba(0,0,0,.4); padding:10px 12px; font-size:13px; }
-  #prac .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:6px 0; } #prac label { display:flex; gap:4px; align-items:center; } #prac .big { min-height:36px; font-weight:600; }
   #card .chk { display:flex; gap:6px; align-items:flex-start; margin:2px 0; } #card .chk input { margin-top:2px; }
   #dateIn { position:fixed; left:-300px; top:0; opacity:0; width:10px; height:10px; }
 </style>
@@ -129,7 +130,6 @@
 <div id="ring" hidden><div id="ringBox"></div></div>
 <div id="card" hidden></div>
 <div id="report" hidden></div>
-<div id="prac" hidden></div>
 <div id="tip" hidden></div>
 <div id="toast" hidden></div>
 <input type="date" id="dateIn" aria-label="Replay day" tabindex="-1">
@@ -141,7 +141,7 @@ const DATA_BASE = (() => {
   if (q) return q.endsWith("/") ? q : q + "/";
   return "https://drknygdsfirqaypagosr.supabase.co/storage/v1/object/public/ticks/";
 })();
-const VER = "4.2";
+const VER = "4.3.1";
 
 // ---------- constants ----------
 const TFS = [5, 15, 45, 60, 1440];
@@ -150,7 +150,9 @@ const SESSION_MS = 405 * 60000;              // 09:30 -> 16:15 New York = 81 fiv
 const OPEN_MIN = 9 * 60 + 30;
 const PAD = 5;                               // empty slots right of the live bar
 const K = 2 / 21;                            // 20-period EMA
-const AXIS_W = 64, AXIS_H = 20, SNAP = 0.25, MIN_RISK = 0.5;
+let AXIS_W = 52;                            // set below to fit a 4-digit price with 2 decimals
+const AXIS_H = 20, SNAP = 0.25, MIN_RISK = 0.5;
+try { const c = document.createElement("canvas").getContext("2d"); c.font = "11px system-ui,sans-serif"; AXIS_W = Math.ceil(c.measureText("7777.77").width) + 10; } catch (e) { /* keep 52 */ }
 const DEF_VIS = { 5: 81, 15: 54, 45: 27, 60: 27, 1440: 20 };
 const DEF_TAGS = ["Wedge", "Double top", "Double bottom", "Failed breakout", "Breakout pullback", "Opening reversal",
   "Trend from the open", "Trading range fade", "Major trend reversal", "Trend channel line", "20-gap-bar", "Second entry (H2/L2)", "Other"];
@@ -164,9 +166,11 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem("brooks4." + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("brooks4." + k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
 };
-const S = Object.assign({ hideRandom: true, ema: true, gap: true, nums: true, refs: true, multi: false, quick: true, wake: true, land: false,
-  pracFrom: "09:30", pracTo: "11:00", pracN: 5, pracMode: "row", ruleCheck: false, rules: null, fab: null, mainFrac: 0.64, sideFrac: 0.5, tags: null, side: [15, 60], speed: 10, tf: 5, lastSide: "L" }, LS.get("settings", {}));
+const S = Object.assign({ ema: true, gap: true, nums: true, refs: true, multi: false, quick: true, wake: true, land: false,
+  autoPartial: true, showHist: true, showLines: true, cardPos: null, ruleCheck: false, rules: null, fab: null, mainFrac: 0.64, sideFrac: 0.5, tags: null, side: [15, 60], speed: 10, tf: 5, lastSide: "L" }, LS.get("settings", {}));
 if (!Array.isArray(S.tags) || !S.tags.length) S.tags = DEF_TAGS.slice();
+S.wake = true;                                  // the screen stays on (no switch any more)
+try { localStorage.removeItem("brooks4.prac"); localStorage.removeItem("brooks4.pracHist"); } catch (e) { /* ignore */ }
 const saveSettings = () => LS.set("settings", S);
 
 // ---------- offline cache (IndexedDB): day files are kept once loaded ----------
@@ -188,10 +192,6 @@ const IDB = {
   async put(k, v) {
     const db = await this.open(); if (!db) return;
     try { db.transaction("f", "readwrite").objectStore("f").put(v, k); } catch (e) { /* ignore */ }
-  },
-  async clear() {
-    const db = await this.open(); if (!db) return;
-    return new Promise(res => { try { const q = db.transaction("f", "readwrite").objectStore("f").clear(); q.onsuccess = q.onerror = () => res(); } catch (e) { res(); } });
   },
   async count() {
     const db = await this.open(); if (!db) return 0;
@@ -235,7 +235,7 @@ const dayOf = {};         // date -> index (indexes move when older years are ad
 let daily = {};           // date -> [o,h,l,c] (x1000)
 const months = {};        // 'YYYY-MM' -> {date: [[bar,o,h,l,c],...]}
 const HIST = 40;
-let histN = HIST, extending = false, hideDate = false;
+let histN = HIST, extending = false;
 let dayIdx = 0, clock = 0, ptr = 0, playing = false, speed = S.speed || 10;
 let bars = {};            // tf -> [{d,b,o,h,l,c,e}]
 let lastPrice = null, busy = false, restoring = false;
@@ -299,6 +299,7 @@ async function loadMonth(key) {
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function fmtDate(s) { const [y, m, d] = s.split("-").map(Number); return d + " " + MON[m - 1]; }
+function fmtDayDate(s) { const dt = new Date(s + "T00:00:00Z"); return WD[dt.getUTCDay()] + " " + fmtDate(s); }
 function fmtDateLong(s) { const dt = new Date(s + "T00:00:00Z"); return WD[dt.getUTCDay()] + " " + fmtDate(s) + " " + s.slice(0, 4); }
 function weekKey(s) {
   const dt = new Date(s + "T00:00:00Z"), dow = (dt.getUTCDay() + 6) % 7;
@@ -380,7 +381,7 @@ async function resetDay(i, keep) {
   const need = new Set(); for (let k = Math.max(0, i - histN); k < i; k++) need.add(days[k].date.slice(0, 7));
   await Promise.all([...need].map(loadMonth));
   dayIdx = i; clock = 0; ptr = 0;
-  for (const p of panels) p.off = 0;
+  for (const p of panels) { p.off = 0; p.vo = 0; }
   buildHistory(i);
   let lp = null;
   for (let k = i - 1; k >= 0 && lp == null; k--) { const d = daily[days[k].date]; if (d) lp = d[3] / 1000; }
@@ -391,7 +392,6 @@ async function resetDay(i, keep) {
 
 function advanceTo(c) {
   const D = days[dayIdx];
-  c = Math.min(c, pracEnd());
   while (ptr < D.ms.length && D.ms[ptr] <= c) {
     lastPrice = D.bid[ptr] / 1000;
     addTick(dayIdx, D.ms[ptr], lastPrice);
@@ -399,14 +399,12 @@ function advanceTo(c) {
     ptr++;
   }
   clock = c;
-  if (pracOn() && c >= prac.to && !restoring) { pracWindowEnd(); return; }
-  if (c >= SESSION_MS && hideDate) { hideDate = false; toast("Day finished: it was " + fmtDateLong(days[dayIdx].date), 5000); }
   if (c >= SESSION_MS && !restoring && live.length) endOfDay();
 }
 
 // close the bar of the main chart's timeframe; pressed again, close the next one
 function nextBar() {
-  if (busy || clock >= pracEnd()) return;
+  if (busy || clock >= SESSION_MS) return;
   const tf = main.tf, T = tfMs(tf);
   const b = Math.floor(clock / T);
   let end = (b + 1) * T - 1;
@@ -417,7 +415,6 @@ function nextBar() {
 }
 async function togglePlay() {
   if (busy) return;
-  if (pracOn() && clock >= prac.to) { openPracPanel(); return; }
   if (clock >= SESSION_MS) await goDay(dayIdx);
   playing = !playing; for (const p of panels) p.off = 0; syncUI();
 }
@@ -440,9 +437,9 @@ async function load() {
   }
   refreshLive();
 }
-async function goDay(i, keep, hide) {
+async function goDay(i, keep) {
   i = clamp(i, 0, days.length - 1);
-  try { await resetDay(i, keep); hideDate = !!hide && !!S.hideRandom; } catch (err) { busy = false; $("msg").style.display = "flex"; $("msg").textContent = "Could not load " + days[i].date + ": " + err.message; }
+  try { await resetDay(i, keep); } catch (err) { busy = false; $("msg").style.display = "flex"; $("msg").textContent = "Could not load " + days[i].date + ": " + err.message; }
   syncUI();
 }
 
@@ -453,9 +450,8 @@ function fmtClock(ms) {
   return hhmm(Math.floor(m / 60)) + ":" + String(m % 60).padStart(2, "0");
 }
 function barLabel(tf, bar) {
-  if (hideDate) return tf === 1440 ? (dayIdx - bar.d) + "d ago" : (bar.d === dayIdx ? "today " : (dayIdx - bar.d) + "d ago ") + hhmm(OPEN_MIN + bar.b * tf);
-  if (tf === 1440) return fmtDate(days[bar.d].date);
-  return fmtDate(days[bar.d].date) + " " + hhmm(OPEN_MIN + bar.b * tf);
+  if (tf === 1440) return fmtDayDate(days[bar.d].date);
+  return fmtDayDate(days[bar.d].date) + " " + hhmm(OPEN_MIN + bar.b * tf);
 }
 function msLabel(ms) { return hhmm(OPEN_MIN + Math.floor(ms / 60000)); }
 function toast(msg, ms) {
@@ -474,7 +470,7 @@ const panels = [];
 function mkPanel(boxId, tf, isMain, visScale) {
   const box = $(boxId), cv = box.querySelector("canvas");
   const p = { id: boxId, box, cv, ctx: cv.getContext("2d"), tf, main: isMain, off: 0, W: 0, H: 0, map: null,
-    visMap: {} };
+    visMap: {}, vz: 1, vo: 0 };
   for (const t of TFS) p.visMap[t] = Math.max(8, Math.round(DEF_VIS[t] * visScale));
   panels.push(p);
   new ResizeObserver(() => sizePanel(p)).observe(box);
@@ -546,8 +542,8 @@ function niceStep(range, target) {
   return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * pw;
 }
 const NICE_MIN = [5, 15, 30, 45, 60, 90, 135, 180, 270, 405];
-const FIB = [0, 0.382, 0.5, 0.618, 1];
-const FX = [0.618, 1, 1.272, 1.618, 2];     // measured-move projections from point C
+const FIB = [0, 0.5, 1];
+const FX = [1];     // measured move: the equal-leg projection from point C
 
 function drawPanel(p) {
   if (p.W < 20 || p.H < 20) return;
@@ -555,7 +551,7 @@ function drawPanel(p) {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, p.W, p.H);
   const arr = bars[tf]; if (!arr || !arr.length) { p.map = null; return; }
-  const pw = p.W - AXIS_W, ph = p.H - AXIS_H, nrow = (S.nums && tf !== 1440) ? 14 : 0, phc = ph - nrow;
+  const pw = p.W - AXIS_W, ph = p.H - AXIS_H, phc = ph;
   const n = arr.length, nv = p.visMap[tf], slot = pw / (nv + PAD), off = p.off;
   const xc = i => pw - (PAD + (n - 1 - i) - off + 0.5) * slot;
   let i0 = n - 1; while (i0 > 0 && xc(i0 - 1) > -slot) i0--;
@@ -564,6 +560,7 @@ function drawPanel(p) {
   for (let i = i0; i <= i1; i++) { if (arr[i].h > hi) hi = arr[i].h; if (arr[i].l < lo) lo = arr[i].l; }
   if (!isFinite(hi)) { p.map = null; return; }
   const padp = Math.max((hi - lo) * 0.08, 0.5); hi += padp; lo -= padp;
+  if (p.vz !== 1 || p.vo) { const ctr = arr[i1].c + (p.vo || 0), rg = (hi - lo) / p.vz; hi = ctr + rg / 2; lo = ctr - rg / 2; }
   const y = pr => (hi - pr) / (hi - lo) * phc;
   p.map = { pw, ph, phc, hi, lo, slot, n, arr, off, i0, i1 };
 
@@ -589,6 +586,16 @@ function drawPanel(p) {
     ctx.fillRect(lx, top, w, hgt);
     ctx.strokeRect(lx + 0.5, top + 0.5, Math.max(0, w - 1), Math.max(0, hgt - 1));
   }
+  // bar numbers (5-minute chart only): 1, 3, 6, 9, 12 ... counted from the open of each day, just below the bar
+  if (S.nums && tf === 5) {
+    ctx.fillStyle = "#6b7380"; ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const step3 = slot * 3 >= 20, step9 = slot * 9 >= 20;
+    for (let i = i0; i <= i1; i++) {
+      const num = arr[i].b + 1;
+      const ok = step3 ? (num === 1 || num % 3 === 0) : (step9 ? (num === 1 || num % 9 === 0) : false);
+      if (ok) { const x = xc(i); if (x > 6 && x < pw - 4) ctx.fillText(String(num), x, y(arr[i].l) + 9); }
+    }
+  }
   // 20 EMA
   {
     ctx.strokeStyle = "#00a0a8"; ctx.lineWidth = 1.3; ctx.beginPath();
@@ -612,17 +619,6 @@ function drawPanel(p) {
   if (cross && cross.panel === p) drawCross(p, ctx, pw, phc);
   ctx.restore();
 
-  // bar numbers: 1, 3, 6, 9, 12 ... counted from the open of each day
-  if (nrow) {
-    ctx.fillStyle = "#6b7380"; ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    const step3 = slot * 3 >= 20, step9 = slot * 9 >= 20;
-    for (let i = i0; i <= i1; i++) {
-      const num = arr[i].b + 1;
-      const ok = step3 ? (num === 1 || num % 3 === 0) : (step9 ? (num === 1 || num % 9 === 0) : false);
-      if (ok) { const x = xc(i); if (x > 6 && x < pw - 4) ctx.fillText(String(num), x, phc + nrow * 0.62); }
-    }
-  }
-
   // price axis
   ctx.font = "11px system-ui,sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "left";
   const step = niceStep(hi - lo, Math.max(3, phc / 46));
@@ -640,7 +636,7 @@ function drawPanel(p) {
   // time axis
   ctx.fillStyle = "#000"; ctx.textAlign = "center"; ctx.strokeStyle = "#000";
   let lastX = -1e9;
-  const labW = tf === 1440 ? 56 : 92;
+  const labW = tf === 1440 ? 72 : 108;
   let SS = 405; for (const m of NICE_MIN) if (m % tf === 0 && (m / tf) * slot >= labW) { SS = m; break; }
   const kIdx = Math.max(1, Math.ceil(labW / slot));
   for (let i = i0; i <= i1; i++) {
@@ -661,7 +657,7 @@ function drawPanel(p) {
 // ---------- prior-period lines ----------
 function drawRefs(p, ctx, y, pw, phc) {
   const list = refsFor(p.tf); if (!list.length) return;
-  ctx.font = "10px system-ui,sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  ctx.font = "9px system-ui,sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "right";
   for (const r of list) {
     let yy = y(r.price), out = 0;
     if (yy < 8) { yy = 8; out = -1; } else if (yy > phc - 8) { yy = phc - 8; out = 1; }
@@ -670,9 +666,9 @@ function drawRefs(p, ctx, y, pw, phc) {
       ctx.beginPath(); ctx.moveTo(0, Math.round(yy) + 0.5); ctx.lineTo(pw, Math.round(yy) + 0.5); ctx.stroke();
       ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
-    const lab = (out < 0 ? "▲ " : out > 0 ? "▼ " : "") + r.id + " " + r.price.toFixed(2), tw = ctx.measureText(lab).width + 8;
-    ctx.fillStyle = r.col; ctx.fillRect(pw - tw - 2, yy - 7, tw, 14);
-    ctx.fillStyle = "#fff"; ctx.fillText(lab, pw - 6, yy);
+    const lab = (out < 0 ? "▲ " : out > 0 ? "▼ " : "") + r.id, tw = ctx.measureText(lab).width + 6;
+    ctx.fillStyle = r.col; ctx.fillRect(pw - tw - 2, yy - 6, tw, 12);
+    ctx.fillStyle = "#fff"; ctx.fillText(lab, pw - 5, yy);
   }
 }
 function refHit(p, x, y) {       // returns the prior-period line under the pixel, if any
@@ -720,32 +716,24 @@ function drawObj(p, ctx, o, sel) {
     }
   } else if (o.kind === "fib") {
     const a = o.pts[0].p, b = o.pts[1].p, xl = Math.min(P[0].x, P[1].x), xr = Math.max(P[0].x, P[1].x);
-    ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
     ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y); ctx.lineTo(P[1].x, P[1].y); ctx.stroke(); ctx.setLineDash([]);
     for (const f of FIB) {
       const pr = b - (b - a) * f, yy = yOfP(p, pr);
       ctx.globalAlpha = f === 0 || f === 1 ? 0.9 : 0.6;
       ctx.beginPath(); ctx.moveTo(xl, yy); ctx.lineTo(Math.max(xr, xl + 40), yy); ctx.stroke(); ctx.globalAlpha = 1;
-      ctx.fillText(f + "  " + pr.toFixed(2), xl + 3, yy - 1);
     }
   } else if (o.kind === "fx") {
     const A = o.pts[0], B = o.pts[1], dP = B.p - A.p;
-    ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y); ctx.lineTo(P[1].x, P[1].y); ctx.stroke();
+    ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y); ctx.lineTo(P[1].x, P[1].y); ctx.stroke();
     if (o.pts.length > 2) {
-      ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(P[1].x, P[1].y); ctx.lineTo(P[2].x, P[2].y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(P[1].x, P[1].y); ctx.lineTo(P[2].x, P[2].y); ctx.stroke(); ctx.setLineDash([]);
       const xl = P[2].x, xr = fxRight(P);
-      ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
-      ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.moveTo(xl, P[2].y); ctx.lineTo(xr, P[2].y); ctx.stroke();
-      ctx.fillText("C " + o.pts[2].p.toFixed(2), xl + 3, P[2].y - 1);
       for (const r of FX) {
-        const pr = o.pts[2].p + dP * r, yy = yOfP(p, pr);
-        ctx.globalAlpha = r === 1 ? 0.95 : 0.6;
+        const yy = yOfP(p, o.pts[2].p + dP * r);
         ctx.beginPath(); ctx.moveTo(xl, yy); ctx.lineTo(xr, yy); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.fillText(r + "  " + pr.toFixed(2), xl + 3, yy - 1);
       }
-      ctx.globalAlpha = 0.07; const yT = yOfP(p, o.pts[2].p + dP);
-      ctx.fillRect(xl, Math.min(P[2].y, yT), xr - xl, Math.abs(yT - P[2].y)); ctx.globalAlpha = 1;
     }
+    ctx.setLineDash([]);
   }
   if (sel) {                       // handles
     ctx.fillStyle = "#fff"; ctx.lineWidth = 2;
@@ -789,7 +777,6 @@ function drawHit(p, x, y) {
       if (o.pts.length > 2) {
         d = Math.min(d, segDist(x, y, P[1].x, P[1].y, P[2].x, P[2].y));
         const xl = P[2].x, xr = fxRight(P), dP = o.pts[1].p - o.pts[0].p;
-        d = Math.min(d, segDist(x, y, xl, P[2].y, xr, P[2].y));
         for (const r of FX) { const yy = yOfP(p, o.pts[2].p + dP * r); d = Math.min(d, segDist(x, y, xl, yy, xr, yy)); }
       }
     }
@@ -837,7 +824,7 @@ function drawCrossAxis(p, ctx, pw, ph) {
   ctx.fillStyle = "#222"; ctx.fillRect(pw + 1, c.y - 9, AXIS_W - 1, 18); ctx.fillStyle = "#fff"; ctx.fillText(pr.toFixed(2), pw + 6, c.y);
   const T = tOfX(p, c.x);
   const dm = dateMsOfT(T);
-  const txt = hideDate ? (p.tf === 1440 ? "" : msLabel(Math.floor(dm.ms / (p.tf * 60000)) * p.tf * 60000)) : fmtDate(dm.date) + (p.tf === 1440 ? "" : " " + msLabel(Math.floor(dm.ms / (p.tf * 60000)) * p.tf * 60000));
+  const txt = fmtDayDate(dm.date) + (p.tf === 1440 ? "" : " " + msLabel(Math.floor(dm.ms / (p.tf * 60000)) * p.tf * 60000));
   ctx.textAlign = "center"; const tw = ctx.measureText(txt).width + 10;
   const tx = clamp(c.x, tw / 2, pw - tw / 2);
   ctx.fillStyle = "#222"; ctx.fillRect(tx - tw / 2, ph + 1, tw, AXIS_H - 2); ctx.fillStyle = "#fff"; ctx.fillText(txt, tx, ph + AXIS_H / 2 + 1);
@@ -895,7 +882,9 @@ function onDown(p, e) {
   }
   if (ptrs.size > 2) return;
   hideTip();
-  G = { p, id: e.pointerId, sx: pt.x, sy: pt.y, lx: pt.x, moved: false, k: "pan" };
+  G = { p, id: e.pointerId, sx: pt.x, sy: pt.y, lx: pt.x, ly: pt.y, moved: false, k: "pan" };
+  if (pt.x > p.map.pw && pt.y < p.map.ph) { G.k = "vz"; G.z0 = p.vz; return; }          // price axis: drag up/down = taller/shorter bars
+  if (pt.y > p.map.ph) { G.k = "hz"; G.v0 = p.visMap[p.tf]; return; }                    // time axis: drag left/right = more/fewer bars
   if (tool === "cross") {
     const m = magnetPoint(p, pt.x, pt.y);
     cross = { panel: p, x: xOfT(p, m.T), y: yOfP(p, m.p), snapped: m.snapped, a: { T: m.T, p: m.p }, b: { T: m.T, p: m.p } };
@@ -937,7 +926,11 @@ function onMove(p, e) {
   const m = p.map;
   switch (G.k) {
     case "pan":
-      p.off = clamp(p.off + (pt.x - G.lx) / m.slot, 0, Math.max(0, m.n - 3)); break;
+      p.off = clamp(p.off + (pt.x - G.lx) / m.slot, 0, Math.max(0, m.n - 3));
+      if (p.vz !== 1) p.vo += (pt.y - G.ly) * (m.hi - m.lo) / m.phc;                    // vertical pan only while the price scale is zoomed
+      break;
+    case "vz": p.vz = clamp(G.z0 * Math.exp(-(pt.y - G.sy) * 0.01), 0.25, 12); break;
+    case "hz": p.visMap[p.tf] = clamp(Math.round(G.v0 * Math.exp((pt.x - G.sx) * 0.008)), 8, 300); break;
     case "cross": {
       const mm = magnetPoint(p, pt.x, pt.y);
       cross.x = xOfT(p, mm.T); cross.y = yOfP(p, mm.p); cross.snapped = mm.snapped; cross.b = { T: mm.T, p: mm.p }; break;
@@ -948,7 +941,7 @@ function onMove(p, e) {
     case "draw": if (G.moved) dragDrawing(p, pt); break;
     default: break;
   }
-  G.lx = pt.x;
+  G.lx = pt.x; G.ly = pt.y;
 }
 function onUp(p, e, cancelled) {
   ptrs.delete(e.pointerId);
@@ -988,7 +981,7 @@ function dragDrawing(p, pt) {
 }
 function showTip(e, r) {
   const t = $("tip");
-  t.innerHTML = "<b>" + r.name + "</b> (" + r.id + ")<br>" + r.price.toFixed(2) + "<br><span style='color:#5d6670'>" + (hideDate ? "date hidden until the day ends" : r.when) + "</span>";
+  t.innerHTML = "<b>" + r.name + "</b> (" + r.id + ")<br>" + r.price.toFixed(2) + "<br><span style='color:#5d6670'>" + r.when + "</span>";
   t.hidden = false;
   const w = 200, x = clamp(e.clientX + 12, 4, innerWidth - w - 8), y = clamp(e.clientY - 60, 4, innerHeight - 90);
   t.style.left = x + "px"; t.style.top = y + "px";
@@ -1002,7 +995,7 @@ for (const p of panels) {
   p.cv.addEventListener("pointerup", e => onUp(p, e));
   p.cv.addEventListener("pointercancel", e => onUp(p, e, true));
   p.cv.addEventListener("wheel", e => { e.preventDefault(); p.visMap[p.tf] = clamp(Math.round(p.visMap[p.tf] * (e.deltaY > 0 ? 1.1 : 0.9)), 8, 300); }, { passive: false });
-  p.cv.addEventListener("dblclick", () => { p.off = 0; });
+  p.cv.addEventListener("dblclick", () => { p.off = 0; p.vz = 1; p.vo = 0; });
   p.cv.addEventListener("contextmenu", e => e.preventDefault());
 }
 // the two small timeframe buttons of the context charts cycle through the timeframes
@@ -1027,7 +1020,7 @@ function bindSplit(el, which) {
     if (!on) return;
     if (which === "V") {
       const r = $("charts").getBoundingClientRect();
-      S.mainFrac = clamp(portrait() ? (e.clientY - r.top) / r.height : (e.clientX - r.left) / r.width, 0.3, 0.85);
+      S.mainFrac = clamp(portrait() ? (e.clientY - r.top) / r.height : 1 - (e.clientX - r.left) / r.width, 0.3, 0.85);
     } else {
       const r = $("side").getBoundingClientRect();
       S.sideFrac = clamp(portrait() ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height, 0.2, 0.8);
@@ -1071,8 +1064,7 @@ function newDraft(side) {
   const arr = bars[main.tf], done = arr && arr.length > 1 ? arr[arr.length - 2] : null;      // last completed bar of the main chart
   const t = { id: "t" + Date.now().toString(36) + (tid++), date: days[dayIdx].date, side, state: "draft", type: "market",
     follow: true, entry: lastPrice, sl: 0, sl0: 0, tp: null, risk: 0, remaining: 1, realized: 0, exits: [], rules: [],
-    openMs: null, closeMs: null, R: null, mfe: 0, mae: 0, setup: "", note: "", chkv: [] };
-  if (pracOn()) { t.prac = prac.id; t.pday = prac.idx; }
+    openMs: null, closeMs: null, R: null, mfe: 0, mae: 0, setup: "", tags: [], note: "", chkv: [] };
   const px = lastPrice, dir = dirOf(t);
   let sl = done && done.d === dayIdx ? (dir > 0 ? done.l - SNAP : done.h + SNAP) : px - dir * 3;
   if (dir * (px - sl) < 1.5) sl = px - dir * 1.5;
@@ -1129,7 +1121,7 @@ function onTick(pr, ms) {
     t.lastP = pr; t.lastMs = ms;
     if (d * (pr - t.sl) <= 0) { exitTrade(t, t.remaining, t.sl, ms, t.sl === t.entry ? "BE" : (d * (t.sl - t.entry) > 0 ? "Trail" : "SL")); continue; }
     if (t.tp != null && d * (pr - t.tp) >= 0) { exitTrade(t, t.remaining, t.tp, ms, "TP"); continue; }
-    for (const rl of t.rules) {
+    if (S.autoPartial !== false) for (const rl of t.rules) {
       if (rl.done) continue;
       const lvl = rl.kind === "R" ? t.entry + d * rl.v * t.risk : t.entry + d * rl.v;
       if (d * (pr - lvl) >= 0) {
@@ -1178,7 +1170,7 @@ function drawTrades(p, ctx, y, pw, phc) {
   for (const t of trades) {
     if (t.date !== dayDate) continue;
     if (t.state === "pending" || t.state === "open" || t.state === "draft") {
-      for (const L of tradeLines(t)) {
+      if (S.showLines !== false) for (const L of tradeLines(t)) {
         let yy = y(L.pr), out = 0;
         if (yy < 9) { yy = 9; out = -1; } else if (yy > phc - 9) { yy = phc - 9; out = 1; }
         if (!out) {
@@ -1192,7 +1184,7 @@ function drawTrades(p, ctx, y, pw, phc) {
         ctx.fillStyle = "#fff"; ctx.fillText(lab, 8, yy);
       }
     }
-    if (t.state !== "draft" && t.openMs != null) drawFills(p, ctx, y, t);
+    if (S.showHist !== false && t.state !== "draft" && t.openMs != null) drawFills(p, ctx, y, t);
   }
 }
 function drawFills(p, ctx, y, t) {
@@ -1219,7 +1211,7 @@ function drawFills(p, ctx, y, t) {
 }
 // which trade line (if any) is under this pixel; the line must be on this panel
 function tradeHit(p, x, y) {
-  if (!p.map) return null;
+  if (!p.map || S.showLines === false) return null;
   let best = null, bd = 14;
   for (const t of live) {
     for (const L of tradeLines(t)) {
@@ -1256,14 +1248,20 @@ function openTradeCard(side) {
   if (!t) t = newDraft(side || S.lastSide || "L");
   openCard(t);
 }
-function openCard(t) { cardTrade = t; cardSig = ""; rulesSig = ""; $("card").hidden = false; renderCard(); }
+function applyCardPos() {
+  const c = $("card"), p = S.cardPos;
+  if (p && isFinite(p.x) && isFinite(p.y)) { c.style.right = "auto"; c.style.left = clamp(p.x, 0, Math.max(0, innerWidth - 80)) + "px"; c.style.top = clamp(p.y, 0, Math.max(0, innerHeight - 40)) + "px"; }
+}
+function openCard(t) { cardTrade = t; cardSig = ""; rulesSig = ""; $("card").hidden = false; applyCardPos(); renderCard(); }
 function closeCard() {
   const t = cardTrade; cardTrade = null; $("card").hidden = true;
   if (t && t.state === "draft") { trades = trades.filter(x => x !== t); refreshLive(); }
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-function tagOptions(sel) {
-  return '<option value="">(no setup)</option>' + S.tags.map(g => '<option' + (g === sel ? " selected" : "") + '>' + esc(g) + "</option>").join("") + '<option value="__new">＋ new setup…</option>';
+const tagsOf = t => (t.tags && t.tags.length ? t.tags : (t.setup ? [t.setup] : []));
+function tagChips(t) {
+  const cur = tagsOf(t);
+  return S.tags.map((g, i) => '<button class="chip tg' + (cur.includes(g) ? " on" : "") + '" data-i="' + i + '">' + esc(g) + "</button>").join("") + '<button class="chip" id="cTagNew">＋ new</button>';
 }
 function renderCard() {
   const t = cardTrade, el = $("card"); if (!t) return;
@@ -1292,12 +1290,12 @@ function renderCard() {
   }
   if (st === "closed") h += '<div id="cExits"></div>';
   if (st !== "closed") {
-    h += '<div class="sec"><div><b>Automatic partial exits</b></div><div id="cRules"></div>' +
+    h += '<div class="sec" id="cAutoSec"><div class="row" style="margin:0"><b>Automatic partial exits</b><label style="margin-left:auto"><input type="checkbox" id="cAuto"' + (S.autoPartial !== false ? " checked" : "") + '> on</label></div><div id="cRules"></div>' +
       '<div class="row"><select id="rk"><option value="R">at R</option><option value="pts">at points</option></select>' +
       '<input type="number" id="rv" value="1" step="0.25" style="width:62px"> close <input type="number" id="rp" value="50" min="1" max="100" style="width:56px">%' +
       '<label><input type="checkbox" id="rb" checked> then stop to entry</label><button class="chip" id="radd">Add</button></div></div>';
   }
-  h += '<div class="sec"><div class="row"><select id="cTag">' + tagOptions(t.setup) + '</select></div>' +
+  h += '<div class="sec"><div><b>Setup tags</b> <small>(tap to add or remove, several allowed)</small></div><div class="tags" id="cTags">' + tagChips(t) + '</div>' +
     '<div class="row"><input type="text" id="cNote" placeholder="Note" style="flex:1;min-width:0" value="' + esc(t.note || "") + '"></div></div>';
   if (st === "closed") h += '<div class="row"><button class="chip" id="cDel">Delete this trade</button></div>';
   el.innerHTML = h;
@@ -1307,6 +1305,10 @@ function renderCard() {
 function wireCard() {
   const t = cardTrade, el = $("card"), q = id => el.querySelector("#" + id);
   q("cX").onclick = closeCard;
+  { const hd = el.querySelector(".chead"); let dg = null;
+    hd.onpointerdown = e => { if (e.target.closest("button")) return; const r = el.getBoundingClientRect(); dg = { dx: e.clientX - r.left, dy: e.clientY - r.top }; hd.setPointerCapture(e.pointerId); };
+    hd.onpointermove = e => { if (!dg) return; S.cardPos = { x: e.clientX - dg.dx, y: e.clientY - dg.dy }; applyCardPos(); };
+    hd.onpointerup = hd.onpointercancel = () => { if (dg) { dg = null; saveSettings(); } }; }
   el.querySelectorAll("input[data-ri]").forEach(c => { c.onchange = () => { t.chkv = t.chkv || []; t.chkv[Number(c.dataset.ri)] = c.checked; }; });
   if (q("cBuy")) { q("cBuy").onclick = () => { t.side = "L"; resetDraftSl(t); renderCard(); }; q("cSell").onclick = () => { t.side = "S"; resetDraftSl(t); renderCard(); }; }
   const num = v => { const x = parseFloat(v); return isFinite(x) ? snap(x) : null; };
@@ -1325,19 +1327,26 @@ function wireCard() {
     const v = clamp(parseFloat(q("cPct").value) || 0, 1, 100);
     exitTrade(t, v / 100, lastPrice, Math.min(clock, SESSION_MS), "Manual " + v + "%"); if (t.state === "closed") renderCard();
   };
+  if (q("cAuto")) { const sec = q("cAutoSec"); sec.style.opacity = S.autoPartial !== false ? "" : "0.5"; q("cAuto").onchange = e => { S.autoPartial = e.target.checked; saveSettings(); sec.style.opacity = S.autoPartial ? "" : "0.5"; toast("Automatic partial exits " + (S.autoPartial ? "ON" : "OFF")); }; }
   if (q("radd")) q("radd").onclick = () => {
     const v = parseFloat(q("rv").value), pc = clamp(parseFloat(q("rp").value) || 0, 1, 100);
     if (!(v > 0)) { toast("Enter a level above zero"); return; }
     t.rules.push({ kind: q("rk").value, v, pct: pc, be: q("rb").checked, done: false }); rulesSig = ""; saveTrades(); updateCard(true);
   };
-  q("cTag").onchange = e => {
-    if (e.target.value === "__new") {
-      const nm = (prompt("Name of the new setup:") || "").trim();
-      if (nm && !S.tags.includes(nm)) { S.tags.push(nm); saveSettings(); }
-      t.setup = nm || t.setup; renderCard();
-    } else t.setup = e.target.value;
-    saveTrades();
+  const setTag = (g, on) => {
+    const cur = tagsOf(t).slice(), k = cur.indexOf(g);
+    if (on && k < 0) cur.push(g); else if (!on && k >= 0) cur.splice(k, 1);
+    t.tags = cur; t.setup = cur.join(", "); saveTrades();
   };
+  const wireTags = () => {
+    el.querySelectorAll(".tg").forEach(b => { b.onclick = () => { const g = S.tags[Number(b.dataset.i)]; setTag(g, !b.classList.contains("on")); b.classList.toggle("on"); }; });
+    q("cTagNew").onclick = () => {
+      const nm = (prompt("Name of the new setup tag:") || "").trim(); if (!nm) return;
+      if (!S.tags.includes(nm)) { S.tags.push(nm); saveSettings(); }
+      setTag(nm, true); q("cTags").innerHTML = tagChips(t); wireTags();
+    };
+  };
+  wireTags();
   q("cNote").onchange = e => { t.note = e.target.value; saveTrades(); };
   if (q("cDel")) q("cDel").onclick = () => { if (confirm("Delete this trade from the journal?")) { trades = trades.filter(x => x !== t); cardTrade = null; $("card").hidden = true; refreshLive(); saveTrades(); } };
 }
@@ -1380,7 +1389,7 @@ function updateCard(force) {
 }
 
 // ======================================================================
-// OPTIONAL RULE CHECK and PRACTICE SESSIONS
+// OPTIONAL RULE CHECK
 // ======================================================================
 const DEF_RULES = ["Signal bar is a good one (trend bar closing near its extreme)", "With the trend, or a clear major reversal setup",
   "Stop is at a logical place and the risk is small", "Reward is at least as big as the risk", "I would take this trade again without fear"];
@@ -1398,94 +1407,6 @@ function chkSummary(t) {
   return { ok, n: t.chk.length, all: ok === t.chk.length };
 }
 
-// ---------- practice sessions ----------
-let prac = LS.get("prac", null);           // {id, active, from, to, n, mode, dates:[dayIdx..], idx, res:[{date,R,n}], ended}
-const savePrac = () => LS.set("prac", prac);
-const pracOn = () => !!(prac && prac.active);
-const pracEnd = () => (pracOn() ? prac.to : SESSION_MS);
-const clkToMs = s => { const m = /^(\d{1,2}):(\d{2})$/.exec(s || ""); return m ? (Number(m[1]) * 60 + Number(m[2]) - OPEN_MIN) * 60000 : null; };
-const msToClk = ms => hhmm(OPEN_MIN + Math.round(ms / 60000));
-const dayGuard = fn => () => { if (pracOn()) { closeRing(); toast("A practice session is running. Open Practice to end it first.", 3500); } else fn(); };
-
-function pracDates(n, mode) {
-  const last = days.length - 1, pool = last;           // day 0 has no history before it
-  n = clamp(n, 1, Math.max(1, pool));
-  if (mode === "rand") {
-    const set = new Set(); while (set.size < n) set.add(1 + Math.floor(Math.random() * pool));
-    return [...set];
-  }
-  const start = 1 + Math.floor(Math.random() * Math.max(1, pool - n + 1));
-  return Array.from({ length: n }, (_, k) => Math.min(last, start + k));
-}
-async function pracStart(from, to, n, mode) {
-  const f = clkToMs(from), t = clkToMs(to);
-  if (f == null || t == null || f < 0 || t > SESSION_MS || t - f < 5 * 60000) { toast("Choose a window between 09:30 and 16:15, at least 5 minutes long", 4000); return; }
-  S.pracFrom = from; S.pracTo = to; S.pracN = n; S.pracMode = mode; saveSettings();
-  prac = { id: "p" + Date.now().toString(36), active: true, from: f, to: t, n, mode, dates: pracDates(n, mode), idx: 0, res: [], t0: Date.now() };
-  savePrac(); closePracPanel(); await pracGo(0);
-}
-async function pracGo(k) {
-  prac.idx = k; savePrac(); closePracPanel();
-  await goDay(prac.dates[k], false, true);
-  restoring = true; advanceTo(prac.from); restoring = false;
-  for (const p of panels) p.off = 0;
-  toast("Practice day " + (k + 1) + " of " + prac.n + ": " + msToClk(prac.from) + " – " + msToClk(prac.to) + ". Press play.", 4000); syncUI();
-}
-function pracDayResult() {
-  const k = prac.idx, list = trades.filter(t => t.prac === prac.id && t.pday === k && t.state === "closed");
-  return { date: days[prac.dates[k]].date, R: list.reduce((a, t) => a + t.R, 0), n: list.length, wins: list.filter(t => t.R > 0.05).length };
-}
-function pracWindowEnd() {
-  if (!pracOn() || prac.res[prac.idx]) return;
-  playing = false; hideDate = false;
-  flattenLive("Window end");
-  prac.res[prac.idx] = pracDayResult();
-  if (prac.idx >= prac.n - 1) { prac.active = false; prac.finished = true; pushPracHist(); }
-  savePrac(); syncUI(); openPracPanel();
-}
-function pushPracHist() {
-  const h = LS.get("pracHist", []);
-  const tot = prac.res.reduce((a, r) => a + r.R, 0), nt = prac.res.reduce((a, r) => a + r.n, 0);
-  h.push({ id: prac.id, t0: prac.t0, from: msToClk(prac.from), to: msToClk(prac.to), n: prac.n, mode: prac.mode, R: tot, trades: nt, days: prac.res.map(r => ({ date: r.date, R: r.R, n: r.n })) });
-  LS.set("pracHist", h.slice(-40));
-}
-function pracEndNow() {
-  if (pracOn() && !prac.res[prac.idx]) { flattenLive("Practice ended"); prac.res[prac.idx] = pracDayResult(); }
-  if (prac && prac.res.length) { prac.n = prac.res.length; pushPracHist(); }
-  prac = null; LS.set("prac", null); closePracPanel(); syncUI();
-}
-function closePracPanel() { $("prac").hidden = true; }
-function openPracPanel() {
-  closeRing(); closeCard(); const el = $("prac"); el.hidden = false;
-  const resTable = r => '<table class="t"><tr><th>Day</th><th>Date</th><th>Trades</th><th>Result</th></tr>' +
-    r.map((x, i) => "<tr><td>" + (i + 1) + "</td><td>" + (i === r.length - 1 && pracOn() && !prac.finished && false ? "hidden" : x.date) + "</td><td>" + x.n + '</td><td class="' + cls(x.R) + '">' + fR(x.R) + "</td></tr>").join("") + "</table>";
-  if (prac && (prac.active || prac.finished)) {
-    const done = prac.res.length, tot = prac.res.reduce((a, r) => a + r.R, 0), nt = prac.res.reduce((a, r) => a + r.n, 0);
-    const atEnd = pracOn() && !!prac.res[prac.idx];
-    let h = "<b>Practice session</b> · window " + msToClk(prac.from) + " – " + msToClk(prac.to) + " · " + prac.n + " day" + (prac.n > 1 ? "s" : "") + (prac.mode === "rand" ? " (random)" : " in a row");
-    if (prac.finished) h += '<p><b>Finished.</b> Total <b class="' + cls(tot) + '">' + fR(tot) + "</b> in " + nt + " trade" + (nt === 1 ? "" : "s") + ".</p>";
-    else h += "<p>Day " + (prac.idx + 1) + " of " + prac.n + (atEnd ? " is finished." : " is running.") + " So far <b class=\"" + cls(tot) + '">' + fR(tot) + "</b></p>";
-    if (done) h += resTable(prac.res);
-    h += '<div class="row">';
-    if (atEnd) h += '<button class="big buy" id="pNext" style="flex:1">Next day ▶</button>';
-    if (prac.finished) h += '<button class="big" id="pNew" style="flex:1">New session</button>';
-    if (pracOn()) h += '<button class="chip" id="pEnd">End session</button>';
-    h += '<button class="chip" id="pClose">Close</button></div>';
-    el.innerHTML = h;
-    if ($("pNext")) $("pNext").onclick = () => pracGo(prac.idx + 1);
-    if ($("pNew")) $("pNew").onclick = () => { prac = null; LS.set("prac", null); openPracPanel(); };
-    if ($("pEnd")) $("pEnd").onclick = () => { if (confirm("End the practice session now? Finished days stay in the journal.")) pracEndNow(); };
-    $("pClose").onclick = () => { if (prac && prac.finished) { prac = null; LS.set("prac", null); } closePracPanel(); };
-    return;
-  }
-  el.innerHTML = "<b>Practice session</b><p style='margin:4px 0;color:#5d6670'>Practise one part of the day, on days you have not seen. Times are the app clock (New York, 09:30 – 16:15). The replay starts at From and stops at To; open trades are closed at To.</p>" +
-    '<div class="row"><label>From <input type="time" id="pf" value="' + (S.pracFrom || "09:30") + '"></label><label>To <input type="time" id="pt" value="' + (S.pracTo || "11:00") + '"></label></div>' +
-    '<div class="row"><label>Days <input type="number" id="pn" min="1" max="60" value="' + (S.pracN || 5) + '" style="width:60px"></label>' +
-    '<select id="pm"><option value="row"' + (S.pracMode !== "rand" ? " selected" : "") + '>days in a row, random start</option><option value="rand"' + (S.pracMode === "rand" ? " selected" : "") + ">random days</option></select></div>" +
-    '<div class="row"><button class="big buy" id="pGo" style="flex:1">Start</button><button class="chip" id="pClose">Cancel</button></div>';
-  $("pGo").onclick = () => pracStart($("pf").value, $("pt").value, clamp(parseInt($("pn").value) || 1, 1, 60), $("pm").value);
-  $("pClose").onclick = closePracPanel;
-}
 
 // ======================================================================
 // FLOATING MENU (movable button + round menu like MetaTrader)
@@ -1516,8 +1437,8 @@ $("qNext").addEventListener("click", nextBar);
 
 let ringLevel = "root";
 const ringOpen = () => !$("ring").hidden;
-function closeRing() { $("ring").hidden = true; ringLevel = "root"; }
-function toggleRing() { if (ringOpen()) closeRing(); else { ringLevel = "root"; $("ring").hidden = false; renderRing(); } }
+function closeRing() { $("ring").hidden = true; ringLevel = "root"; wrap.style.visibility = ""; }
+function toggleRing() { if (ringOpen()) closeRing(); else { ringLevel = "root"; $("ring").hidden = false; wrap.style.visibility = "hidden"; renderRing(); } }
 $("ring").addEventListener("pointerdown", e => { if (e.target === $("ring")) closeRing(); });
 
 const TITLES = { root: "Menu", tf: "Timeframe", speed: "Speed", day: "Day", draw: "Draw", more: "Options", more2: "More" };
@@ -1528,30 +1449,28 @@ function ringItems(level) {
     case "tf": return TFS.map(t => ({ ic: TF_LABEL[t], t: "", on: main.tf === t, f: () => setMainTf(t) })).concat([back]);
     case "speed": return [1, 5, 10, 30, 60, 150, 400].map(v => ({ ic: v + "x", t: "", on: speed === v, f: () => { speed = v; S.speed = v; saveSettings(); } })).concat([back]);
     case "day": return [
-      { ic: "◀", t: "Prev day", f: dayGuard(() => goDay(dayIdx - 1)) }, { ic: "▶", t: "Next day", f: dayGuard(() => goDay(dayIdx + 1)) },
-      { ic: "🎲", t: "Random", f: dayGuard(() => goDay(1 + Math.floor(Math.random() * Math.max(1, days.length - 1)), false, true)) },
-      { ic: "📅", t: "Pick date", f: dayGuard(pickDate) }, { ic: "⟲", t: "Restart", f: dayGuard(() => goDay(dayIdx, false, hideDate)) }, back];
+      { ic: "◀", t: "Prev day", f: () => goDay(dayIdx - 1) }, { ic: "▶", t: "Next day", f: () => goDay(dayIdx + 1) },
+      { ic: "🎲", t: "Random", f: () => goDay(1 + Math.floor(Math.random() * Math.max(1, days.length - 1))) },
+      { ic: "📅", t: "Pick date", f: pickDate }, { ic: "⟲", t: "Restart", f: () => goDay(dayIdx) }, back];
     case "draw": return [
       { ic: "─", t: "H-line", f: () => setTool("h"), on: tool === "h" }, { ic: "╱", t: "Trend", f: () => setTool("tl"), on: tool === "tl" },
       { ic: "▭", t: "Box", f: () => setTool("rect"), on: tool === "rect" }, { ic: "⫽", t: "Channel", f: () => setTool("ch"), on: tool === "ch" },
       { ic: "≣", t: "Fib", f: () => setTool("fib"), on: tool === "fib" }, { ic: "⇅", t: "Measured", f: () => setTool("fx"), on: tool === "fx" },
-      { ic: "🗑", t: "Delete sel.", f: delSelected }, { ic: "🧹", t: "Clear all", f: () => { if (confirm("Delete all drawings?")) { drawings = []; selDraw = null; showSelbar(); saveDrawings(); } } }, back];
+      { ic: "🧹", t: "Clear all", f: () => { if (confirm("Delete all drawings?")) { drawings = []; selDraw = null; showSelbar(); saveDrawings(); } } }, back];
     case "more": return [
-      tog("nums", "#", "Bar no."), tog("refs", "═", "Prior lines"), tog("multi", "▦", "3 charts", () => { for (const p of panels) p.off = 0; }), tog("hideRandom", "🙈", "Hide date"),
+      tog("nums", "#", "Bar no."), tog("refs", "═", "Prior lines"), tog("multi", "▦", "3 charts", () => { for (const p of panels) p.off = 0; }),
+      tog("showHist", "◂", "Trade history"), tog("showLines", "≡", "Trade lines"),
       tog("quick", "▶⏭", "Quick"),
-      tog("wake", "☀", "Screen on", applyWake),
       { ic: "›", t: "More", sub: "more2" }, { ic: "↩", t: "Back", sub: "root" }];
     case "more2": return [
-      { ic: "⏩", t: "Latest day", f: dayGuard(() => goDay(days.length - 1)) },
+      { ic: "⏩", t: "Latest day", f: () => goDay(days.length - 1) },
       tog("ruleCheck", "✔", "Rule check"), { ic: "✎", t: "Edit rules", f: editRules },
-      { ic: "▤", t: "Reset layout", f: () => { S.mainFrac = 0.64; S.sideFrac = 0.5; applySplit(); saveSettings(); } },
-      { ic: "🗄", t: "Clear offline", f: async () => { if (confirm("Delete the downloaded days stored on this device? They will download again when needed.")) { await IDB.clear(); toast("Offline data cleared"); } } },
-      { ic: "ℹ", t: "About", f: () => toast("Brooks Tick Replay " + VER + " · " + days.length + " days · data from Dukascopy USA500.IDX", 5000) }, back];
+      back];
     default: return [
       { ic: playing ? "⏸" : "▶", t: playing ? "Pause" : "Play", f: togglePlay }, { ic: "⏭", t: "Next bar", f: nextBar },
       { ic: "⏱", t: speed + "x", sub: "speed" }, { ic: "🕒", t: TF_LABEL[main.tf], sub: "tf" }, { ic: "📅", t: "Day", sub: "day" },
       { ic: "✛", t: "Measure", f: () => setTool("cross"), on: tool === "cross" }, { ic: "📈", t: "Trade", f: () => openTradeCard() },
-      { ic: "✎", t: "Draw", sub: "draw" }, { ic: "📒", t: "Journal", f: openReport }, { ic: "🎯", t: "Practice", f: openPracPanel }, { ic: "⋯", t: "Options", sub: "more" }];
+      { ic: "✎", t: "Draw", sub: "draw" }, { ic: "📒", t: "Journal", f: openReport }, { ic: "⋯", t: "Options", sub: "more" }];
   }
 }
 function renderRing() {
@@ -1628,9 +1547,9 @@ function updateHud() {
   if (!days.length || !days[dayIdx]) return;
   const arr = bars[main.tf], lb = arr && arr[arr.length - 1];
   const clk = clock >= SESSION_MS ? "16:15 closed" : fmtClock(clock);
-  $("hudMain").innerHTML = "<b>" + (hideDate ? "Date hidden" : fmtDateLong(days[dayIdx].date)) + "</b> · " + TF_LABEL[main.tf] + " " +
+  $("hudMain").innerHTML = "<b>" + fmtDateLong(days[dayIdx].date) + "</b> · " + TF_LABEL[main.tf] + " " +
     (lb && lb.d === dayIdx ? "O <b>" + lb.o.toFixed(2) + "</b> H <b>" + lb.h.toFixed(2) + "</b> L <b>" + lb.l.toFixed(2) + "</b> C <b>" + lb.c.toFixed(2) + "</b>" : "· press ▶ or ⏭ to start at 09:30") +
-    " · <b>" + clk + "</b> · " + speed + "x" + (pracOn() ? " · <b>Practice " + (prac.idx + 1) + "/" + prac.n + "</b> until " + msToClk(prac.to) : "");
+    " · <b>" + clk + "</b> · " + speed + "x";
 }
 
 // ======================================================================
@@ -1652,15 +1571,15 @@ function openReport() { closeRing(); closeCard(); $("report").hidden = false; re
 function closeReport() { $("report").hidden = true; }
 function renderReport() {
   const el = $("report"), list = closedTrades();
-  el.innerHTML = '<div id="rhead">' + [["sum", "Summary"], ["setup", "By setup"], ["time", "By time"], ["rules", "Rules"], ["prac", "Practice"], ["list", "Trades"]].map(([k, l]) => '<button class="' + (repTab === k ? "on" : "") + '" data-tab="' + k + '">' + l + "</button>").join("") +
-    '<span class="grow"></span><button id="rCsv">CSV</button><button id="rCopy">Copy</button><button id="rX">✕</button></div><div id="rbody"></div>';
+  el.innerHTML = '<div id="rhead">' + [["sum", "Summary"], ["setup", "By setup"], ["time", "By time"], ["rules", "Rules"], ["list", "Trades"]].map(([k, l]) => '<button class="' + (repTab === k ? "on" : "") + '" data-tab="' + k + '">' + l + "</button>").join("") +
+    '<span class="grow"></span><button id="rClear">Clear</button><button id="rCsv">CSV</button><button id="rCopy">Copy</button><button id="rX">✕</button></div><div id="rbody"></div>';
   el.querySelectorAll("[data-tab]").forEach(b => { b.onclick = () => { repTab = b.dataset.tab; renderReport(); }; });
-  $("rX").onclick = closeReport; $("rCsv").onclick = () => exportCsv(list); $("rCopy").onclick = () => copyCsv(list);
+  $("rX").onclick = closeReport;
+  $("rClear").onclick = () => { if (confirm("Clear the whole journal? All finished trades will be deleted. This cannot be undone.")) { trades = trades.filter(t => t.state !== "closed"); saveTrades(); refreshLive(); renderReport(); toast("Journal cleared"); } }; $("rCsv").onclick = () => exportCsv(list); $("rCopy").onclick = () => copyCsv(list);
   const body = $("rbody");
-  if (repTab === "prac") { renderPrac(body); return; }
   if (!list.length) { body.innerHTML = "<p style='color:#5d6670'>No finished trades yet. Open the menu, tap Trade, set the stop (and a target if you want) and place an order. Every result is counted in R: 1R is the distance from your entry to your first stop.</p>"; return; }
   if (repTab === "sum") renderSummary(body, list);
-  else if (repTab === "setup") body.innerHTML = groupTable("Setup", list, t => t.setup || "(no setup)", (a, b) => b.stat.total - a.stat.total);
+  else if (repTab === "setup") body.innerHTML = "<p style='color:#5d6670;margin-top:0'>A trade with several tags is counted under each of its tags.</p>" + groupTable("Setup", list, t => (tagsOf(t).length ? tagsOf(t) : "(no setup)"), (a, b) => b.stat.total - a.stat.total);
   else if (repTab === "time") body.innerHTML = groupTable("Entry time", list, t => { const b = Math.floor((t.openMs || 0) / 1800000); return msLabel(b * 1800000) + " – " + msLabel(b * 1800000 + 1800000); }, (a, b) => a.key.localeCompare(b.key));
   else if (repTab === "rules") {
     const any = list.some(t => t.chk);
@@ -1668,12 +1587,6 @@ function renderReport() {
       groupTable("Rule check", list, t => { const c = chkSummary(t); return !c ? "Not checked" : c.all ? "All rules ticked" : "Some rules skipped"; }, (a, b) => a.key.localeCompare(b.key));
   }
   else renderList(body, list);
-}
-function renderPrac(body) {
-  const h = LS.get("pracHist", []).slice().reverse();
-  body.innerHTML = h.length ? '<table class="t"><tr><th>Started</th><th>Window</th><th>Days</th><th>Trades</th><th>Total R</th></tr>' +
-    h.map(s => "<tr><td>" + new Date(s.t0).toISOString().slice(0, 10) + "</td><td>" + s.from + "–" + s.to + "</td><td>" + s.days.length + (s.mode === "rand" ? " random" : " in a row") + "</td><td>" + s.trades + '</td><td class="' + cls(s.R) + '">' + fR(s.R) + "</td></tr>").join("") + "</table>" :
-    "<p style='color:#5d6670'>No practice sessions yet. Open the menu and tap Practice.</p>";
 }
 const cls = v => (v > 0.005 ? "pos" : v < -0.005 ? "neg" : "");
 function renderSummary(body, list) {
@@ -1694,7 +1607,7 @@ function renderSummary(body, list) {
   c.strokeStyle = cum >= 0 ? "#1a7f37" : "#c62828"; c.lineWidth = 2; c.beginPath(); pts.forEach((v, i) => { if (i) c.lineTo(X(i), Y(v)); else c.moveTo(X(i), Y(v)); }); c.stroke();
 }
 function groupTable(title, list, keyFn, sortFn) {
-  const g = new Map(); for (const t of list) { const k = keyFn(t); (g.get(k) || g.set(k, []).get(k)).push(t); }
+  const g = new Map(); for (const t of list) { const ks = keyFn(t); for (const k of (Array.isArray(ks) ? ks : [ks])) (g.get(k) || g.set(k, []).get(k)).push(t); }
   const rows = [...g.entries()].map(([key, l]) => ({ key, stat: statsOf(l) })).sort(sortFn);
   const mx = Math.max(0.0001, ...rows.map(r => Math.abs(r.stat.total)));
   return '<table class="t"><tr><th>' + title + "</th><th>Trades</th><th>Win %</th><th>Total R</th><th>Avg R</th><th></th></tr>" +
@@ -1702,14 +1615,14 @@ function groupTable(title, list, keyFn, sortFn) {
 }
 function renderList(body, list) {
   body.innerHTML = '<table class="t"><tr><th>Date</th><th>Time</th><th>Side</th><th>Setup</th><th>R</th><th>Exits</th></tr>' +
-    list.slice().reverse().map(t => '<tr data-id="' + t.id + '" style="cursor:pointer"><td>' + (hideDate && t.date === days[dayIdx].date ? "hidden" : t.date) + "</td><td>" + msLabel(t.openMs || 0) + "</td><td>" + (t.side === "L" ? "Long" : "Short") + "</td><td>" + esc(t.setup || "") + '</td><td class="' + cls(t.R) + '">' + fR(t.R) + "</td><td>" + t.exits.map(e => esc(e.why)).join(", ") + "</td></tr>").join("") + "</table><p style='color:#5d6670'>Tap a trade to change its setup or note, or to delete it.</p>";
+    list.slice().reverse().map(t => '<tr data-id="' + t.id + '" style="cursor:pointer"><td>' + t.date + "</td><td>" + msLabel(t.openMs || 0) + "</td><td>" + (t.side === "L" ? "Long" : "Short") + "</td><td>" + esc(tagsOf(t).join(", ")) + '</td><td class="' + cls(t.R) + '">' + fR(t.R) + "</td><td>" + t.exits.map(e => esc(e.why)).join(", ") + "</td></tr>").join("") + "</table><p style='color:#5d6670'>Tap a trade to change its setup or note, or to delete it.</p>";
   body.querySelectorAll("tr[data-id]").forEach(r => { r.onclick = () => { const t = trades.find(x => x.id === r.dataset.id); if (t) { closeReport(); openCard(t); } }; });
 }
 function csvOf(list) {
   const q = v => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
-  const head = ["date", "entry_time_ET", "side", "order", "setup", "note", "entry", "first_stop", "target", "risk_points", "R_total", "MFE_R", "MAE_R", "minutes_in_trade", "rules_ticked", "practice_day", "exits"];
-  const rows = list.map(t => [t.date, msLabel(t.openMs || 0), t.side === "L" ? "long" : "short", t.type, t.setup, t.note, t.entry, t.sl0, t.tp == null ? "" : t.tp, f2(t.risk), f2(t.R), f2(t.mfe), f2(t.mae),
-    Math.round(((t.closeMs || 0) - (t.openMs || 0)) / 60000), (() => { const c = chkSummary(t); return c ? c.ok + "/" + c.n : ""; })(), t.pday != null ? t.pday + 1 : "", t.exits.map(e => msLabel(e.ms) + " " + e.price.toFixed(2) + " " + Math.round(e.frac * 100) + "% " + f2(e.R) + "R " + e.why).join("; ")]);
+  const head = ["date", "entry_time_ET", "side", "order", "setup", "note", "entry", "first_stop", "target", "risk_points", "R_total", "MFE_R", "MAE_R", "minutes_in_trade", "rules_ticked", "exits"];
+  const rows = list.map(t => [t.date, msLabel(t.openMs || 0), t.side === "L" ? "long" : "short", t.type, tagsOf(t).join(" + "), t.note, t.entry, t.sl0, t.tp == null ? "" : t.tp, f2(t.risk), f2(t.R), f2(t.mfe), f2(t.mae),
+    Math.round(((t.closeMs || 0) - (t.openMs || 0)) / 60000), (() => { const c = chkSummary(t); return c ? c.ok + "/" + c.n : ""; })(), t.exits.map(e => msLabel(e.ms) + " " + e.price.toFixed(2) + " " + Math.round(e.frac * 100) + "% " + f2(e.R) + "R " + e.why).join("; ")]);
   return [head].concat(rows).map(r => r.map(q).join(",")).join("\r\n");
 }
 function exportCsv(list) {
@@ -1736,8 +1649,8 @@ let tPrev = performance.now(), tText = 0;
 function frame(t) {
   const dt = Math.min(250, t - tPrev); tPrev = t;
   if (playing && !busy) {
-    advanceTo(Math.min(pracEnd(), clock + dt * speed));
-    if (clock >= pracEnd()) { playing = false; syncUI(); }
+    advanceTo(Math.min(SESSION_MS, clock + dt * speed));
+    if (clock >= SESSION_MS) { playing = false; syncUI(); }
   }
   for (const p of panels) {
     if (S.multi || p.main) { drawPanel(p); if (p.map && p.tf !== 1440 && p.map.i0 <= 4) extendHistory(); } else p.map = null;
@@ -1758,7 +1671,7 @@ load().catch(err => { $("msg").style.display = "flex"; $("msg").textContent = "C
 if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) navigator.serviceWorker.register("sw.js").catch(() => { /* optional */ });
 window.__sim = { get bars() { return bars; }, panels, main, side1, side2, advanceTo, goDay, nextBar, get clock() { return clock; }, get dayIdx() { return dayIdx; }, get trades() { return trades; },
   get live() { return live; }, get drawings() { return drawings; }, get refs() { return refs; }, get lastPrice() { return lastPrice; }, S, days: () => days, get ready() { return days.length > 0 && !busy && !!bars[5]; },
-  setMainTf, statsOf, get prac() { return prac; }, pracStart, pracGo, pracWindowEnd, openPracPanel, clkToMs, placeDraft, newDraft, openCard, exitTrade, get tool() { return tool; }, extendHistory, get histN() { return histN; }, get hideDate() { return hideDate; }, xOfT, yOfP, pOfY, tOfX };
+  setMainTf, statsOf, placeDraft, newDraft, openCard, exitTrade, get tool() { return tool; }, extendHistory, get histN() { return histN; }, xOfT, yOfP, pOfY, tOfX };
 </script>
 </body>
 </html>
